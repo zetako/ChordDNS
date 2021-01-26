@@ -24,6 +24,7 @@
     "better-sqlite3": "^7.1.2",
     "chalk": "^4.1.0",
     "fs-extra": "^9.1.0",
+    "inquirer": "^7.3.3",
     "murmurhash3": "^0.5.0",
     "uuid": "^8.3.2"
   }

@@ -32,7 +32,7 @@ function updateVar(pathlike)
 /* ========== DataBase ========== */
 function writeRR(thisRR)
 {
-    var insertQuery=db.prepare('insert into RRs values(?,?,?,?,?,?)');
+    let insertQuery=db.prepare('insert into RRs values(?,?,?,?,?,?)');
     insertQuery.run(
         thisRR.NAME,
         thisRR.TYPE,
@@ -43,6 +43,73 @@ function writeRR(thisRR)
     );
     return;
 }
+function deleteRR(domain)
+{
+    let query=db.prepare("select * from RRs where NAME=? and TYPE='A'").all(domain);
+    if (query.length==0) 
+    {
+        logSys.writeLog('DB','warning',`no record of ${domain} in database`);
+        return false;
+    }
+    else db.prepare('delete from RRs where NAME=?').run(domain);
+    return true;
+}
+function cacheRR(DNSbuffer)
+{
+    let parseResult=parseDNSQuery(Buffer.from(DNSbuffer));
+    if (!parseResult.vaild)
+    {
+        logSys.writeLog('Cache','warning','invalid Answer from upstream');
+        return;
+    }
+    let success=false;
+    let AnsRR=DNSbuffer.readUInt16BE(6);//get Answer RR's number
+    let ip='';
+    if (AnsRR<1)
+    {
+        logSys.writeLog('Cache','warning','invalid Answer from upstream');
+        return;
+    }
+    offset=parseResult.length;//jump over question
+    let thisType;
+    for (let i=0;i<AnsRR;i++)
+    {
+        offset+=2;
+        thisType=DNSbuffer.readUInt16BE(offset);
+        if (thisType==1)//A type
+        {
+            success=true;
+            offset+=10;
+            let tmp;
+            for (let j=0;j<4;j++)
+            {
+                console.log(j);
+                tmp=DNSbuffer.readUInt8(offset);
+                offset+=1;
+                ip=ip+tmp.toString();
+                if (j<3) ip=ip+'.';
+            }
+            break;
+        }
+        else
+        {
+            offset+=8;//read rdlength
+            thisType=DNSbuffer.readUInt16BE(offset);
+            offset+=2;
+            offset+=thisType;
+        }
+    }
+    if (!success)
+    {
+        logSys.writeLog('Cache','warning','invalid Answer from upstream');
+        return;
+    }
+    logSys.writeLog('Cache','log',`cache from upstream: ${parseResult.value}->${ip}`);
+    let localRR=new RR(parseResult.value,'A','IN',100,ip.length,ip);
+    writeRR(localRR);
+    return;
+}
+
 /* ========== Chord Ring ========== */
 function chord_message(msgType,msgStatus,msgContent)
 {
@@ -53,26 +120,60 @@ function chord_message(msgType,msgStatus,msgContent)
 function chord_onMsgFunc(from,id,message,reply)//the on_message function
 {
     logSys.writeLog('chord','log',`recv from ${id}, type=${message.type}`);
+    let replyMsg;
     switch (message.type)
     {
-        case 'query':
-            if (message.status!='A') break;
-            let query=db.prepare("select * from RRs where TYPE='A' and NAME=?").all(message.content);
-            let replyMsg;
-            logSys.writeLog('DB','log',`query ${message.content} of ${query.length} record(s)`);
-            if (query.length==0) replyMsg=new chord_message('reply','notfound',null);
-            else replyMsg=new chord_message('reply','found',JSON.stringify(query[0]));
+    case 'query':
+        if (message.status!='A') break;
+        let query=db.prepare("select * from RRs where TYPE='A' and NAME=?").all(message.content);
+        logSys.writeLog('DB','log',`query ${message.content} of ${query.length} record(s)`);
+        if (query.length==0) replyMsg=new chord_message('reply','notfound',null);
+        else replyMsg=new chord_message('reply','found',JSON.stringify(query[0]));
+        reply(replyMsg);
+        break;
+
+    case 'store':
+        if (message.status!='A')
+        {
+            logSys.writeLog('DB','warning','try to write none A record');
+            replyMsg=new chord_message('reply','invalid','we only support add A record');
+            reply(replyMsg)
+            break;
+        }
+        let thisObj=JSON.parse(message.content);
+        let thisRR=new RR(thisObj.domain,'A','IN',100,thisObj.ip.length,thisObj.ip);
+        writeRR(thisRR);
+        logSys.writeLog('DB','notify',`write A record of ${thisObj.domain} success`);
+        replyMsg=new chord_message('reply','valid',null);
+        reply(replyMsg);
+        break;
+
+    case 'delete':
+        if (message.status!='A')
+        {
+            logSys.writeLog('DB','warning','try to delete none A record');
+            replyMsg=new chord_message('reply','invalid','we only support add A record');
+            reply(replyMsg)
+            break;
+        }
+
+        let success=deleteRR(message.content);
+        if (success)
+        {
+            logSys.writeLog('DB','notify',`delete A record of ${message.content} success`);
+            replyMsg=new chord_message('reply','valid',null);
             reply(replyMsg);
-            break;
+        }
+        else
+        {
+            logSys.writeLog('DB','notify',`delete A record of ${message.content} failed`);
+            replyMsg=new chord_message('reply','invalid',null);
+            reply(replyMsg);
+        }
+        break;
 
-        case 'store':
-            let thisObj=JSON.parse(message.content);
-            let thisRR=new RR(thisObj.domain,'A','IN',100,thisObj.ip.length,thisObj.ip);
-            writeRR(thisRR);
-            break;
-
-        default:
-            break;
+    default:
+        break;
     }
 }
 
@@ -90,7 +191,7 @@ function parseDNSQuery(buffer)
 {
     let offset=2;
     let flag=buffer.readUInt16BE(offset);//the flag
-    if (flag!=0x0100) return { vaild:false,value:null };
+    if (flag!=0x0100&&flag!=0x8180) return { vaild:false,value:null };
     offset+=2;
     let qdcount=buffer.readUInt16BE(offset);//question num, we only parse the 1st question
     offset+=8;
@@ -108,7 +209,8 @@ function parseDNSQuery(buffer)
     }
     let queryInstance={
         vaild:true,
-        value:host
+        value:host,
+        length:offset+4
     };
     return queryInstance;
 }
@@ -117,7 +219,7 @@ function findRR(target,chordSend,msg,remoteInfo)
     let queryClient=chord.Client((chord_from,chord_id,chord_msg,chord_reply)=>{
         if (chord_msg.type!='reply')
         {
-            logSys.writeLog('Chord','warning','Client Recv Wrong Msg');
+            logSys.writeLog('chord','warning','Client Recv Wrong Msg');
             return;
         }
         if (chord_msg.status=='found')
@@ -143,6 +245,7 @@ function passForward(message,remoteInfo)
         client.close()
     });
     client.on('message',(msg,upstreamInfo)=>{
+        cacheRR(msg);
         server.send(msg,remoteInfo.port,remoteInfo.address,(error)=>{
             if (error)
                 logSys.writeLog('UDP','error',`Recv form upstream but fail to send back:\n${error}`);
@@ -258,4 +361,22 @@ function setupServer(pathlike)
 }
 
 /* ========== running ========== */
-setupServer('./config.json');
+function main()
+{
+    if (db.prepare("select * from sqlite_master where type='table' and name='RRs'").all().length==0)
+    {
+        logSys.writeLog('server','warning','database file "runtime.db" not init');
+        logSys.writeLog('server','notify','init the database...');
+        var init=db.prepare('CREATE TABLE RRs(NAME varchar(50),TYPE varchar(5),CLASS varchar(5),TTL int,RDLENGTH int,RDATA varchar(500))');
+        init.run();
+    }
+
+    let arguments=process.argv;
+    if (arguments.length==2) setupServer('./config.json');
+    else
+    {
+        logSys.writeLog('server','notify',`load config file "${arguments[2]}"`);
+        setupServer(arguments[2]);
+    }
+}
+main();
