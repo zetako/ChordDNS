@@ -1,0 +1,30 @@
+{
+  "name": "chorddns",
+  "version": "1.0.0",
+  "description": "Distributed DNS server with Chord Ring. Written in Node.js",
+  "main": "DNS-Server.js",
+  "scripts": {
+    "test": "node DNS-Server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zetako/ChordDNS.git"
+  },
+  "keywords": [
+    "DNS",
+    "Chord"
+  ],
+  "author": "zetako",
+  "license": "UNLICENSED",
+  "bugs": {
+    "url": "https://github.com/zetako/ChordDNS/issues"
+  },
+  "homepage": "https://github.com/zetako/ChordDNS#readme",
+  "dependencies": {
+    "better-sqlite3": "^7.1.2",
+    "chalk": "^4.1.0",
+    "fs-extra": "^9.1.0",
+    "murmurhash3": "^0.5.0",
+    "uuid": "^8.3.2"
+  }
+}
